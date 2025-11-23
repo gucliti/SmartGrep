@@ -25,7 +25,9 @@ def search(
     threshold: float = typer.Option(1.3, help="Distance threshold (lower is stricter)", min=0.0, max=2.0),
     limit: int = typer.Option(5, help="Max results", min=1, max=50),
     hybrid: bool = typer.Option(True, help="Enable hybrid search (Vector + Keyword + Rerank)"),
-    auto_index: bool = typer.Option(False, help="Automatically update index if stale")
+    auto_index: bool = typer.Option(False, help="Automatically update index if stale"),
+    qa: bool = typer.Option(False, "--qa", help="Enable Code QA with a local LLM (Ollama)"),
+    ollama_model: str = typer.Option("llama3", help="Ollama model to use for Code QA")
 ):
     """
     Search the indexed codebase.
@@ -38,7 +40,7 @@ def search(
     
     console.print(f"[bold green]Searching for: '{query}' (Hybrid: {hybrid})...[/bold green]")
     searcher = CodeSearcher()
-    searcher.search(query, limit=limit, threshold=threshold, hybrid=hybrid)
+    searcher.search(query, limit=limit, threshold=threshold, hybrid=hybrid, qa=qa, ollama_model=ollama_model)
 
 def main():
     app()

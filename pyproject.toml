@@ -20,6 +20,7 @@ dependencies = [
     "tqdm",
     "tantivy",
     "pathspec",
+    "ollama",
 ]
 
 [project.scripts]

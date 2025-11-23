@@ -4,6 +4,8 @@ from rich.console import Console
 from rich.syntax import Syntax
 import warnings
 
+from smartgrep.qa import CodeQA
+
 # Suppress warnings
 warnings.filterwarnings("ignore", message=".*optimum is not installed.*")
 
@@ -27,42 +29,32 @@ class CodeSearcher:
         # Using a lightweight model for speed
         self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-    def search(self, query: str, limit: int = 5, threshold: float = 1.3, hybrid: bool = True):
+    def search(self, query: str, limit: int = 5, threshold: float = 1.3, hybrid: bool = True, qa: bool = False, ollama_model: str = "llama3"):
         if not self.table:
             return
 
-        # 1. Vector Search (Primary)
+        # 1. Vector Search
         query_vector = self.model.encode(query, normalize_embeddings=True)
-        vector_results = self.table.search(query_vector).limit(40).to_list()
+        vector_results = self.table.search(query_vector).limit(limit * 2).to_list()
         
         # Filter by distance threshold
         vector_results = [r for r in vector_results if r.get('_distance', 0) <= threshold]
         
-        # Start with a prioritized list of candidates
-        # Vector results are higher quality, so they go first
-        unique_candidates = []
-        seen_texts = set()
-
-        for r in vector_results:
-            if r['text'] not in seen_texts:
-                unique_candidates.append(r)
-                seen_texts.add(r['text'])
+        candidates = {r['text']: r for r in vector_results}
         
-        # 2. FTS Search (Keyword) - to fill in gaps
+        # 2. FTS Search (Keyword)
         if hybrid:
             try:
-                fts_results = self.table.search(query, query_type="fts").limit(40).to_list()
+                fts_results = self.table.search(query, query_type="fts").limit(limit * 2).to_list()
                 for r in fts_results:
-                    if r['text'] not in seen_texts:
-                        unique_candidates.append(r)
-                        seen_texts.add(r['text'])
+                    # FTS results might not have _distance, so we mark them
+                    if r['text'] not in candidates:
+                        candidates[r['text']] = r
             except Exception as e:
                 # FTS might fail if index doesn't exist
                 pass
 
-        # Now, we have a combined list of up to 80 candidates, with vector results first.
-        # We'll take the top 20 to rerank.
-        rerank_candidates = unique_candidates[:20]
+        unique_candidates = list(candidates.values())
         
         if not unique_candidates:
             self.console.print("[yellow]No results found.[/yellow]")
@@ -92,17 +84,17 @@ class CodeSearcher:
                 self.console.print("-" * 80)
              return
 
-        self.console.print(f"[dim]Reranking {len(rerank_candidates)} candidates...[/dim]")
+        self.console.print(f"[dim]Reranking {len(unique_candidates)} candidates...[/dim]")
         
-        pairs = [[query, r['text']] for r in rerank_candidates]
+        pairs = [[query, r['text']] for r in unique_candidates]
         scores = self.reranker.predict(pairs)
         
         # Attach scores
-        for i, r in enumerate(rerank_candidates):
+        for i, r in enumerate(unique_candidates):
             r['_rerank_score'] = scores[i]
             
         # Sort by rerank score (descending)
-        ranked_results = sorted(rerank_candidates, key=lambda x: x['_rerank_score'], reverse=True)
+        ranked_results = sorted(unique_candidates, key=lambda x: x['_rerank_score'], reverse=True)
         
         # Filter by score (CrossEncoder logits usually > 0 for relevant)
         # We use a conservative threshold of 0.0
@@ -127,3 +119,7 @@ class CodeSearcher:
             syntax = Syntax(res['text'], lang, theme="monokai", line_numbers=True, start_line=res['start_line'])
             self.console.print(syntax)
             self.console.print("-" * 80)
+
+        if qa:
+            qa_service = CodeQA(model=ollama_model)
+            qa_service.answer(query, final_results)
