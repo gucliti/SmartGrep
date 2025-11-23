@@ -1,0 +1,31 @@
+[project]
+name = "smartgrep"
+version = "0.1.0"
+description = "Local semantic code search tool with AI-powered understanding"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "lancedb",
+    "sentence-transformers",
+    "typer",
+    "rich",
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-go",
+    "tree-sitter-rust",
+    "tree-sitter-cpp",
+    "tree-sitter-java",
+    "numpy",
+    "tqdm",
+    "tantivy",
+    "pathspec",
+]
+
+[project.scripts]
+smartgrep = "smartgrep.cli:main"
+sgrep = "smartgrep.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

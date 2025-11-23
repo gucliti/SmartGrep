@@ -1,0 +1,15 @@
+lancedb
+sentence-transformers
+typer
+rich
+tree-sitter
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-go
+tree-sitter-rust
+tree-sitter-cpp
+tree-sitter-java
+numpy
+tqdm
+tantivy
+pathspec
