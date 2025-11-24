@@ -126,6 +126,15 @@ smartgrep search QUERY [OPTIONS]
 - `--limit INT`: Maximum number of results to show (default: 5, range: 1-50)
 - `--hybrid / --no-hybrid`: Enable/disable hybrid search with reranking (default: enabled)
 - `--auto-index / --no-auto-index`: Auto-update index before search (default: enabled)
+- `--qa`: Enable Code QA with a local LLM (Ollama) to get a natural language answer.
+- `--ollama-model TEXT`: The Ollama model to use for Code QA (default: `llama3`).
+
+### `daemon` Command
+For faster searches, SmartGrep runs a background daemon to keep the AI models loaded in memory. The search command will start it automatically.
+
+- `sgrep daemon start`: Start the daemon manually.
+- `sgrep daemon stop`: Stop the daemon.
+- `sgrep daemon status`: Check if the daemon is running.
 
 ## Supported Languages
 - Python (`.py`)
