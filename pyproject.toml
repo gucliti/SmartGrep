@@ -21,6 +21,8 @@ dependencies = [
     "tantivy",
     "pathspec",
     "ollama",
+    "fastapi",
+    "uvicorn",
 ]
 
 [project.scripts]
