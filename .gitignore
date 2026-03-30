@@ -1,24 +1,36 @@
-# Python-generated files
+```
+# Compiled and build artifacts
+*.pyc
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
 
-# Virtual environments
-.venv
+# Dependencies
+.venv/
 venv/
-ENV/
+.env
+.env.local
+.env.*
 
-# Project specific
-.smartgrep/
-*.lance
+# Logs and temp files
+*.log
+*.tmp
+*.swp
 
-# OS specific
-.DS_Store
-Thumbs.db
-
-# IDEs
+# Editors
 .vscode/
 .idea/
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Distribution artifacts
+dist/
+build/
+*.egg-info/
+```
