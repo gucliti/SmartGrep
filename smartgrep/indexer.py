@@ -1,7 +1,7 @@
 import os
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Any, Generator, Set
+from typing import List, Dict, Any, Generator, Set, Tuple
 import lancedb
 from sentence_transformers import SentenceTransformer
 import tree_sitter_python
@@ -10,11 +10,13 @@ import tree_sitter_go
 import tree_sitter_rust
 import tree_sitter_cpp
 import tree_sitter_java
-from tree_sitter import Language, Parser, QueryCursor, Query
+from tree_sitter import Language, Parser, Query
 import rich
 from rich.console import Console
-from rich.progress import track
+from rich.progress import track, Progress
 import pathspec
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 console = Console()
 
@@ -73,24 +75,62 @@ class CodeIndexer:
         except Exception as e:
             self.console.print(f"[red]Error initializing parsers: {e}[/red]")
 
+    def _load_gitignore_specs(self, root_dir: str) -> Dict[str, pathspec.PathSpec]:
+        """Load .gitignore specs from all directories recursively."""
+        specs = {}
+        root_path = Path(root_dir)
+        
+        for dirpath, dirnames, filenames in os.walk(root_dir):
+            gitignore_path = Path(dirpath) / ".gitignore"
+            if gitignore_path.exists():
+                try:
+                    with open(gitignore_path, "r") as f:
+                        patterns = f.read().splitlines()
+                        rel_dir = Path(dirpath).relative_to(root_path)
+                        specs[str(rel_dir)] = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+                except Exception:
+                    pass
+        
+        return specs
+
+    def _matches_any_gitignore(self, file_path: Path, root_dir: str, specs: Dict[str, pathspec.PathSpec]) -> bool:
+        """Check if a file matches any .gitignore pattern in its path hierarchy."""
+        rel_path = file_path.relative_to(root_dir)
+        
+        # Check all parent directories for gitignore specs
+        current_path = rel_path.parent
+        while True:
+            spec_key = str(current_path) if current_path != Path('.') else ''
+            if spec_key in specs:
+                if specs[spec_key].match_file(str(rel_path)):
+                    return True
+            
+            if current_path == Path('.'):
+                break
+            current_path = current_path.parent
+        
+        # Also check root level spec
+        if '' in specs:
+            if specs[''].match_file(str(rel_path)):
+                return True
+        
+        return False
+
     def _get_files(self, root_dir: str) -> Generator[Path, None, None]:
-        """Recursively yield supported files, respecting .gitignore (basic implementation)."""
-        # Load .gitignore patterns
-        gitignore_path = Path(root_dir) / ".gitignore"
-        spec = None
-        if gitignore_path.exists():
-            with open(gitignore_path, "r") as f:
-                patterns = f.read().splitlines()
-                spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        """Recursively yield supported files, respecting .gitignore from all levels."""
+        # Load .gitignore patterns from all directories
+        specs = self._load_gitignore_specs(root_dir)
         
         for root, dirs, files in os.walk(root_dir):
             # Convert to relative path for matching
             rel_root = Path(root).relative_to(root_dir)
             
-            # Filter directories
+            # Filter directories (exclude hidden and gitignored)
             dirs[:] = [d for d in dirs if not d.startswith('.')]
-            if spec:
-                dirs[:] = [d for d in dirs if not spec.match_file(str(rel_root / d))]
+            if specs:
+                dirs[:] = [d for d in dirs if not self._matches_any_gitignore(
+                    Path(root) / d, root_dir, specs
+                )]
             
             for file in files:
                 if file.startswith('.'):
@@ -98,8 +138,8 @@ class CodeIndexer:
                 path = Path(root) / file
                 rel_path = path.relative_to(root_dir)
                 
-                # Check gitignore
-                if spec and spec.match_file(str(rel_path)):
+                # Check gitignore from all levels
+                if specs and self._matches_any_gitignore(path, root_dir, specs):
                     continue
                     
                 if path.suffix in LANGUAGE_MAP:
@@ -165,12 +205,10 @@ class CodeIndexer:
             """
             
         try:
-            from tree_sitter import Query
             query = Query(language, query_scm)
-            cursor = QueryCursor(query)
-            captures = cursor.captures(tree.root_node)
+            captures = query.captures(tree.root_node)
             
-            # Captures is a dict {name: [nodes]}
+            # Captures is a dict {name: [nodes]} in newer tree-sitter
             # We need to flatten it or iterate
             all_nodes = []
             for name, nodes in captures.items():
@@ -217,13 +255,32 @@ class CodeIndexer:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
-    def index(self, root_dir: str):
-        """Main indexing logic with incremental updates."""
+    def _chunk_and_hash_file(self, file_path_str: str) -> Tuple[str, List[Dict[str, Any]], str]:
+        """Chunk a file and calculate its hash. Used for parallel processing."""
+        file_path = Path(file_path_str)
+        file_hash = self._calculate_file_hash(file_path)
+        chunks = self._chunk_file(file_path)
+        # Add file hash to each chunk
+        for chunk in chunks:
+            chunk['file_hash'] = file_hash
+        return file_path_str, chunks, file_hash
+
+    def index(self, root_dir: str, batch_size: int = 100, num_workers: int = None):
+        """Main indexing logic with incremental updates and parallel processing."""
+        if num_workers is None:
+            num_workers = max(1, multiprocessing.cpu_count() - 1)
+        
         files = list(self._get_files(root_dir))
         self.console.print(f"Found {len(files)} files.")
         
         # Calculate current file hashes
-        current_hashes = {str(f): self._calculate_file_hash(f) for f in files}
+        self.console.print(f"[dim]Calculating file hashes...[/dim]")
+        current_hashes = {}
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Hashing files...", total=len(files))
+            for f in files:
+                current_hashes[str(f)] = self._calculate_file_hash(f)
+                progress.update(task, advance=1)
         
         # Load stored hashes from existing table
         stored_hashes = {}
@@ -272,30 +329,50 @@ class CodeIndexer:
             self.console.print("[green]Cleanup complete.[/green]")
             return
         
-        # Process changed files
+        # Process changed files in parallel
+        self.console.print(f"[bold blue]Processing {len(files_to_process)} files with {num_workers} workers...[/bold blue]")
         all_chunks = []
-        for file_path_str in track(files_to_process, description="Chunking files..."):
-            file_path = Path(file_path_str)
-            file_chunks = self._chunk_file(file_path)
-            # Add file hash to each chunk
-            for chunk in file_chunks:
-                chunk['file_hash'] = current_hashes[file_path_str]
-            all_chunks.extend(file_chunks)
+        
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(self._chunk_and_hash_file, f): f for f in files_to_process}
             
+            with Progress() as progress:
+                task = progress.add_task("[cyan]Chunking files...", total=len(futures))
+                for future in as_completed(futures):
+                    try:
+                        file_path_str, chunks, file_hash = future.result()
+                        all_chunks.extend(chunks)
+                    except Exception as e:
+                        self.console.print(f"[yellow]Warning: Failed to process {futures[future]}: {e}[/yellow]")
+                    progress.update(task, advance=1)
+        
         if not all_chunks:
             self.console.print("[yellow]No code chunks found.[/yellow]")
             return
 
-        self.console.print(f"Generated {len(all_chunks)} chunks. Generating embeddings...")
-        # Batch embedding
-        texts = [c["text"] for c in all_chunks]
-        embeddings = self.model.encode(texts, show_progress_bar=True, normalize_embeddings=True)
+        self.console.print(f"Generated {len(all_chunks)} chunks. Generating embeddings in batches of {batch_size}...")
         
+        # Batch embedding to avoid OOM
         data = []
-        for i, chunk in enumerate(all_chunks):
-            record = chunk.copy()
-            record["vector"] = embeddings[i]
-            data.append(record)
+        total_batches = (len(all_chunks) + batch_size - 1) // batch_size
+        
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Generating embeddings...", total=total_batches)
+            
+            for i in range(0, len(all_chunks), batch_size):
+                batch_chunks = all_chunks[i:i + batch_size]
+                texts = [c["text"] for c in batch_chunks]
+                
+                # Encode batch
+                embeddings = self.model.encode(texts, show_progress_bar=False, normalize_embeddings=True)
+                
+                # Create records
+                for j, chunk in enumerate(batch_chunks):
+                    record = chunk.copy()
+                    record["vector"] = embeddings[j]
+                    data.append(record)
+                
+                progress.update(task, advance=1)
         
         # Create or append to table
         if table_exists:

@@ -10,6 +10,7 @@ class SearchRequest(BaseModel):
     limit: int = 5
     threshold: float = 1.3
     hybrid: bool = True
+    max_rerank: int = 50
 
 @app.post("/search")
 def search(request: SearchRequest):
@@ -17,6 +18,7 @@ def search(request: SearchRequest):
         query=request.query,
         limit=request.limit,
         threshold=request.threshold,
-        hybrid=request.hybrid
+        hybrid=request.hybrid,
+        max_rerank=request.max_rerank
     )
     return {"results": results}
